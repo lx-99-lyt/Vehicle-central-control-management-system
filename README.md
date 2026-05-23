@@ -83,7 +83,7 @@
 ├── Car_Log.cpp         # 日志系统实现：分级、自动轮转
 ├── car_ai.conf         # AI 配置文件（含 API Key，已加入 .gitignore）
 ├── car_ai.conf.example # AI 配置文件模板（可提交 Git，api_key 留空）
-└── Makefile            # 构建脚本
+└── CMakeLists.txt       # 构建脚本
 ```
 
 ---
@@ -92,7 +92,7 @@
 
 ### 4.1 编译
 
-需要支持 C++17 的 GCC（Linux 环境）。
+需要支持 C++20 的 GCC（Linux 环境）。
 
 ```bash
 mkdir build
@@ -284,10 +284,14 @@ LOG_ERROR("Socket 绑定失败");
 ### Msg 结构体字段
 
 ```
-┌──────────┬──────────┬──────────┬──────────┬──────────┐
-│ mod_id   │ msg_type │ cmd_type │ item_id  │ val_type │
-│ (1 byte) │ (1 byte) │ (1 byte) │ (1 byte) │ (1 byte) │
-└──────────┴──────────┴──────────┴──────────┴──────────┘
+┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────┐
+│ magic    │ version  │ reserved │ mod_id   │ msg_type │ cmd_type │ item_id  │
+│ (2 byte) │ (1 byte) │ (1 byte) │ (1 byte) │ (1 byte) │ (1 byte) │ (1 byte) │
+└──────────┴──────────┴──────────┴──────────┴──────────┴──────────┴──────────┘
+┌──────────┐
+│ val_type │
+│ (1 byte) │
+└──────────┘
 ┌─────────────────────────────────────────────────────────────┐
 │ value (union, 64 bytes)                                     │
 │   u8       → uint8_t                                        │

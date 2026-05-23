@@ -9,6 +9,7 @@ class Logger {
 public:
     static Logger& getInstance();
     void init(const std::string& path, LogLevel level);
+    __attribute__((format(printf, 5, 6)))
     void log(LogLevel level, const char* file, int line, const char* format, ...);
 private:
     Logger() = default;

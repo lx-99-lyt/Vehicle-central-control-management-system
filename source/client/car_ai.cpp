@@ -8,25 +8,31 @@
 //   5. 通过现有 Unix Domain Socket IPC 把指令下发给各子模块进程
 
 #include "CarData.hpp"
+#include <nlohmann/json.hpp>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstring>
 #include <iostream>
 #include <fstream>
+#include <poll.h>
 #include <sstream>
 #include <string>
 #include <vector>
 #include <algorithm>
 
+using json = nlohmann::json;
+
 // ─────────────────────────────────────────────
 //  全局退出标志
 // ─────────────────────────────────────────────
-static volatile sig_atomic_t g_running = 1;
+static std::atomic<bool> g_running{true};
 
 // ─────────────────────────────────────────────
 //  配置
@@ -119,9 +125,18 @@ static bool ipcRequest(const char* sock_path, Car::Msg& req, Car::Msg& resp) {
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+    addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
     bool ok = false;
-    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0)
-        ok = ipc_sendAll(fd, &req, sizeof(req)) && ipc_recvAll(fd, &resp, sizeof(resp));
+    Car::msgHdrToNetwork(req);  Car::msgValToNetwork(req);
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+        if (ipc_sendAll(fd, &req, sizeof(req)) && ipc_recvAll(fd, &resp, sizeof(resp))) {
+            Car::msgHdrFromNetwork(resp);
+            if (Car::isValidMsg(resp)) {
+                Car::msgValFromNetwork(resp);
+                ok = true;
+            }
+        }
+    }
     close(fd);
     return ok;
 }
@@ -140,7 +155,7 @@ static float getCurrentSpeed() {
 }
 
 // ─────────────────────────────────────────────
-//  JSON 工具（手写，不依赖第三方库）
+//  JSON 工具（基于 nlohmann/json）
 // ─────────────────────────────────────────────
 
 // 从原始响应里剥掉 ```json ... ``` 的 markdown 壳
@@ -153,21 +168,6 @@ static std::string stripMarkdownFence(const std::string& s) {
     return s.substr(first, last - first + 1);
 }
 
-// 从 JSON 字符串里提取指定 key 的字符串值
-// 只处理 "key": "value" 这种简单情况
-static std::string jsonGetString(const std::string& json, const std::string& key) {
-    const std::string needle = "\"" + key + "\"";
-    auto pos = json.find(needle);
-    if (pos == std::string::npos) return "";
-    pos = json.find(':', pos + needle.size());
-    if (pos == std::string::npos) return "";
-    pos = json.find('"', pos + 1);
-    if (pos == std::string::npos) return "";
-    const auto end = json.find('"', pos + 1);
-    if (end == std::string::npos) return "";
-    return json.substr(pos + 1, end - pos - 1);
-}
-
 // 解析 actions 数组，每条 action 包含 module / field / value
 struct Action {
     std::string module; // "air" / "door" / "status"
@@ -175,60 +175,20 @@ struct Action {
     double      value;  // 统一用 double，执行时再转型
 };
 
-// 简单的手写 JSON 数组解析器
-// 只处理 "actions": [ {...}, {...} ] 这种结构，够用了
-static std::vector<Action> parseActions(const std::string& json) {
+static std::vector<Action> parseActions(const json& j) {
     std::vector<Action> result;
-
-    // 找到 actions 数组的起止位置
-    const auto arr_start = json.find("\"actions\"");
-    if (arr_start == std::string::npos) return result;
-    const auto bracket = json.find('[', arr_start);
-    if (bracket == std::string::npos) return result;
-
-    // 逐个扫描 { } 对象块
-    size_t pos = bracket + 1;
-    while (pos < json.size()) {
-        const auto obj_start = json.find('{', pos);
-        if (obj_start == std::string::npos) break;
-
-        // 找到配对的 }，处理嵌套
-        int depth = 1;
-        size_t obj_end = obj_start + 1;
-        while (obj_end < json.size() && depth > 0) {
-            if      (json[obj_end] == '{') ++depth;
-            else if (json[obj_end] == '}') --depth;
-            ++obj_end;
+    try {
+        if (!j.contains("actions") || !j["actions"].is_array()) return result;
+        for (const auto& obj : j["actions"]) {
+            if (!obj.contains("module") || !obj.contains("field") || !obj.contains("value"))
+                continue;
+            Action act;
+            act.module = obj["module"].get<std::string>();
+            act.field  = obj["field"].get<std::string>();
+            act.value  = obj["value"].get<double>();
+            result.push_back(act);
         }
-        if (depth != 0) break;
-
-        const std::string obj = json.substr(obj_start, obj_end - obj_start);
-
-        Action act;
-        act.module = jsonGetString(obj, "module");
-        act.field  = jsonGetString(obj, "field");
-
-        // value 可能是数字，不带引号
-        const std::string val_key = "\"value\"";
-        const auto vpos = obj.find(val_key);
-        if (vpos != std::string::npos) {
-            auto colon = obj.find(':', vpos + val_key.size());
-            if (colon != std::string::npos) {
-                // 跳过空白
-                size_t num_start = colon + 1;
-                while (num_start < obj.size() && std::isspace(static_cast<unsigned char>(obj[num_start])))
-                    ++num_start;
-                try {
-                    size_t consumed = 0;
-                    act.value = std::stod(obj.substr(num_start), &consumed);
-                    if (!act.module.empty() && !act.field.empty())
-                        result.push_back(act);
-                } catch (...) {}
-            }
-        }
-
-        pos = obj_end;
-    }
+    } catch (...) {}
     return result;
 }
 
@@ -328,23 +288,6 @@ static bool executeAction(const Action& act) {
 //  通过 popen 管道发送请求拿到响应，零额外依赖。
 // ─────────────────────────────────────────────
 
-// 转义 JSON 字符串里的特殊字符
-static std::string jsonEscape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 16);
-    for (char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:   out += c;      break;
-        }
-    }
-    return out;
-}
-
 // 多轮对话历史条目
 struct ChatMsg { std::string role; std::string content; };
 
@@ -368,28 +311,35 @@ static std::string buildRequestJson(const AiConfig& cfg,
         "3. 如果用户的话不涉及任何车控操作，actions 返回空数组 []\n"
         "4. value 必须是数字，不能是字符串";
 
-    std::ostringstream json;
-    json << "{\"model\":\"" << cfg.model << "\","
-         << "\"stream\":false,"
-         << "\"messages\":[";
+    json j;
+    j["model"]  = cfg.model;
+    j["stream"] = false;
 
-    // system 消息
-    json << "{\"role\":\"system\",\"content\":\"" << jsonEscape(SYSTEM_PROMPT) << "\"}";
-
-    // 历史消息
+    j["messages"].push_back({{"role", "system"}, {"content", SYSTEM_PROMPT}});
     for (const auto& m : history)
-        json << ",{\"role\":\"" << m.role << "\",\"content\":\"" << jsonEscape(m.content) << "\"}";
+        j["messages"].push_back({{"role", m.role}, {"content", m.content}});
+    j["messages"].push_back({{"role", "user"}, {"content", user_input}});
 
-    // 本轮用户消息
-    json << ",{\"role\":\"user\",\"content\":\"" << jsonEscape(user_input) << "\"}";
+    return j.dump();
+}
 
-    json << "]}";
-    return json.str();
+// 校验 host 只含合法字符，防止命令注入
+static bool isValidHost(const std::string& host) {
+    if (host.empty() || host.size() > 253) return false;
+    for (char c : host) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '.' && c != '-' && c != ':')
+            return false;
+    }
+    return true;
 }
 
 // 通过 openssl s_client 发送 HTTPS 请求，返回响应 body
 // openssl s_client 在绝大多数 Linux / WSL 环境下默认已安装
 static std::string httpsPost(const AiConfig& cfg, const std::string& body) {
+    if (!isValidHost(cfg.api_host)) {
+        std::cerr << "[AI] 非法 API 主机名: " << cfg.api_host << "\n";
+        return "";
+    }
     // 构造完整的 HTTP/1.1 请求报文
     std::ostringstream req;
     req << "POST " << cfg.api_path << " HTTP/1.1\r\n"
@@ -406,8 +356,13 @@ static std::string httpsPost(const AiConfig& cfg, const std::string& body) {
     char tmp_name[] = "/tmp/car_req_XXXXXX";
     int fd = mkstemp(tmp_name);
     if (fd < 0) return "";
-    int written = write(fd, req_str.data(), req_str.size());
-    (void)written;
+    [[maybe_unused]] ssize_t written = write(fd, req_str.data(), req_str.size());
+    if (static_cast<size_t>(written) != req_str.size()) {
+        close(fd);
+        unlink(tmp_name);
+        std::cerr << "[AI] 临时文件写入失败\n";
+        return "";
+    }
     close(fd);
 
     // 用 openssl s_client 建立 TLS 连接并收发数据
@@ -423,11 +378,35 @@ static std::string httpsPost(const AiConfig& cfg, const std::string& body) {
         return "";
     }
 
-    // 读取完整响应
+    // 读取响应，30 秒超时，防止 API 卡死阻塞整个 AI 进程
+    int pipe_fd = fileno(pipe);
     std::string response;
     char buf[4096];
-    while (fgets(buf, sizeof(buf), pipe))
+    constexpr int TIMEOUT_SEC = 30;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(TIMEOUT_SEC);
+
+    while (true) {
+        auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            std::cerr << "[AI] API 请求超时（" << TIMEOUT_SEC << "s）\n";
+            break;
+        }
+        int ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+
+        pollfd pfd{pipe_fd, POLLIN, 0};
+        int ret = poll(&pfd, 1, ms);
+        if (ret < 0) break;
+        if (ret == 0) {
+            std::cerr << "[AI] API 请求超时（" << TIMEOUT_SEC << "s）\n";
+            break;
+        }
+        if (!(pfd.revents & POLLIN)) break;
+
+        ssize_t n = read(pipe_fd, buf, sizeof(buf) - 1);
+        if (n <= 0) break;
+        buf[n] = '\0';
         response += buf;
+    }
 
     pclose(pipe);
     unlink(tmp_name);
@@ -438,38 +417,14 @@ static std::string httpsPost(const AiConfig& cfg, const std::string& body) {
     return response.substr(header_end + 4);
 }
 
-// 从 DeepSeek 返回的完整响应 JSON 里提取 message.content 字段
-// 响应格式：{"choices":[{"message":{"content":"..."}}]}
+// 从 API 返回的响应 JSON 里提取 message.content 字段
+// DeepSeek/OpenAI 格式：{"choices":[{"message":{"content":"..."}}]}
 static std::string extractContent(const std::string& resp_json) {
-    // 找到 "content" 的值，模型回复在这里
-    const std::string key = "\"content\"";
-    auto pos = resp_json.find(key);
-    if (pos == std::string::npos) return "";
-
-    // content 的值是一个转义过的 JSON 字符串，要处理转义字符
-    auto start = resp_json.find('"', pos + key.size() + 1); // 跳过 : 和空格
-    if (start == std::string::npos) return "";
-    ++start; // 跳过开头的 "
-
-    // 手动扫描，处理 \" 转义，找到真正的结束引号
-    std::string content;
-    for (size_t i = start; i < resp_json.size(); ++i) {
-        if (resp_json[i] == '\\' && i + 1 < resp_json.size()) {
-            switch (resp_json[i + 1]) {
-                case '"':  content += '"';  ++i; break;
-                case '\\': content += '\\'; ++i; break;
-                case 'n':  content += '\n'; ++i; break;
-                case 'r':  content += '\r'; ++i; break;
-                case 't':  content += '\t'; ++i; break;
-                default:   content += resp_json[i + 1]; ++i; break;
-            }
-        } else if (resp_json[i] == '"') {
-            break; // 遇到未转义的引号，字符串结束
-        } else {
-            content += resp_json[i];
-        }
+    try {
+        return json::parse(resp_json).at("choices").at(0).at("message").at("content").get<std::string>();
+    } catch (...) {
+        return "";
     }
-    return content;
 }
 
 // ─────────────────────────────────────────────
@@ -514,12 +469,20 @@ static void runChatLoop(const AiConfig& cfg) {
         // 4. 剥掉可能存在的 markdown 代码块壳
         const std::string clean = stripMarkdownFence(content);
 
-        // 5. 提取 reply 字段，展示给用户
-        const std::string reply = jsonGetString(clean, "reply");
+        // 5. 解析 AI 返回的结构化 JSON（只 parse 一次，reply + actions 共享）
+        json ai_json;
+        try {
+            ai_json = json::parse(clean);
+        } catch (...) {
+            std::cout << "\nAI: " << content << "\n(本次无车控指令)\n\n";
+            continue;
+        }
+
+        const std::string reply = ai_json.value("reply", "");
         std::cout << "\nAI: " << (reply.empty() ? content : reply) << "\n";
 
         // 6. 解析 actions 数组
-        const std::vector<Action> actions = parseActions(clean);
+        const std::vector<Action> actions = parseActions(ai_json);
 
         if (actions.empty()) {
             std::cout << "(本次无车控指令)\n\n";
@@ -546,9 +509,9 @@ static void runChatLoop(const AiConfig& cfg) {
             std::cout << "\n";
         }
 
-        // 9. 把本轮对话追加进历史
+        // 9. 把本轮对话追加进历史（assistant 存 reply 文本，不存原始 JSON）
         history.push_back({"user",      input});
-        history.push_back({"assistant", content});
+        history.push_back({"assistant", reply.empty() ? content : reply});
 
         // 10. 超出上限时，丢掉最早的两条（一问一答）
         while (static_cast<int>(history.size()) > MAX_HISTORY)
@@ -564,7 +527,7 @@ static void runChatLoop(const AiConfig& cfg) {
 int main(int argc, char* argv[]) {
     // 信号处理
     struct sigaction sa{};
-    sa.sa_handler = [](int) { g_running = 0; };
+    sa.sa_handler = [](int) { g_running = false; };
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT,  &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
@@ -576,6 +539,11 @@ int main(int argc, char* argv[]) {
     AiConfig cfg;
     if (!loadConfig(conf_path, cfg)) return 1;
 
-    runChatLoop(cfg);
+    try {
+        runChatLoop(cfg);
+    } catch (const std::exception& e) {
+        std::cerr << "[AI] 异常退出: " << e.what() << "\n";
+        return 1;
+    }
     return 0;
 }

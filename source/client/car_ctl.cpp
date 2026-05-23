@@ -35,16 +35,6 @@ static bool recvAll(int fd, void* buf, size_t size) {
     return true;
 }
 
-static const char* gearToText(uint8_t gear) {
-    switch (static_cast<Car::Gear>(gear)) {
-        case Car::Gear::P: return "P";
-        case Car::Gear::R: return "R";
-        case Car::Gear::N: return "N";
-        case Car::Gear::D: return "D";
-        default: return "UNKNOWN";
-    }
-}
-
 static bool parseGearInput(const std::string& s, uint8_t& out) {
     if (s.size() == 1) {
         char c = static_cast<char>(std::toupper(static_cast<unsigned char>(s[0])));
@@ -81,17 +71,25 @@ int sendCmd(const std::string& path, Car::Msg& cmd, Car::Msg& resp) {
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
+    addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
 
-    if (connect(fd, (sockaddr*)&addr, sizeof(addr)) < 0) {
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         std::cerr << "连接 " << path << " 失败！\n";
         close(fd);
         return -1;
     }
 
+    Car::msgHdrToNetwork(cmd);  Car::msgValToNetwork(cmd);
     if (!sendAll(fd, &cmd, sizeof(cmd)) || !recvAll(fd, &resp, sizeof(resp))) {
         close(fd);
         return -1;
     }
+    Car::msgHdrFromNetwork(resp);
+    if (!Car::isValidMsg(resp)) {
+        close(fd);
+        return -1;
+    }
+    Car::msgValFromNetwork(resp);
     close(fd);
     return 0;
 }
@@ -127,7 +125,7 @@ void printGetAll(Car::ModuleID mod_ID, const Car::Msg& resp) {
                       << " 油温：" << s.oil_temp << " °C\n"
                       << " 油量：" << s.fuel << " %\n"
                       << " 电压：" << s.battery_voltage << " V\n"
-                      << " 档位：" << gearToText(s.gear) << " (" << (int)s.gear << ")\n"
+                      << " 档位：" << Car::gearToText(s.gear) << " (" << static_cast<int>(s.gear) << ")\n"
                       << " 手刹：" << (s.hand_brake ? "拉起" : "放下") << "\n";
             break;
         }
@@ -136,7 +134,7 @@ void printGetAll(Car::ModuleID mod_ID, const Car::Msg& resp) {
             std::memcpy(&a, resp.value.arr_u8, sizeof(a));
             std::cout << "[ 空调状态 ]:\n"
                       << " AC开关：" << (a.ac_switch ? "开" : "关") << "\n"
-                      << " 风速：" << (int)a.fan_speed << "\n"
+                      << " 风速：" << static_cast<int>(a.fan_speed) << "\n"
                       << " 设定温度：" << a.temp_set << " °C\n"
                       << " 内外循环：" << (a.inner_cycle ? "内循环" : "外循环") << "\n";
             break;
@@ -145,11 +143,11 @@ void printGetAll(Car::ModuleID mod_ID, const Car::Msg& resp) {
             Car::FaultState f;
             std::memcpy(&f, resp.value.arr_u8, sizeof(f));
             std::cout << "[ 故障状态 ]:\n"
-                      << " 故障数：" << (int)f.fault_count << "\n"
+                      << " 故障数：" << static_cast<int>(f.fault_count) << "\n"
                       << " 故障码：";
-            for (int i = 0; i < Car::MAX_FAULT_CODE; ++i) {
-                if (f.fault_codes[i] != 0) // 只打印非0的故障码
-                    std::cout << std::hex << std::setw(4) << std::setfill('0') << f.fault_codes[i] << " ";
+            for (auto code : f.fault_codes) {
+                if (code != 0)
+                    std::cout << std::hex << std::setw(4) << std::setfill('0') << code << " ";
             }
             std::cout << "\n"
                       << " 警告灯：" << (f.wring_light ? "亮" : "灭") << "\n";
@@ -260,11 +258,11 @@ int main(int argc, char const *argv[])
             switch (resp.val_type) {
                 case Car::ValType::U8:
                     if (modStr == "status" && itemStr == "gear") {
-                        std::cout << gearToText(resp.value.u8) << " (" << (int)resp.value.u8 << ")\n";
+                        std::cout << Car::gearToText(resp.value.u8) << " (" << static_cast<int>(resp.value.u8) << ")\n";
                     }
                     else {
                         // uint8_t 默认会被当成字符打印，所以要转成 int
-                        std::cout << (int)resp.value.u8 << "\n";
+                        std::cout << static_cast<int>(resp.value.u8) << "\n";
                     }
                     break;
 
