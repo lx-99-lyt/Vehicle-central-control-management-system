@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/epoll.h>
+#include <atomic>
 #include <csignal>
 #include <unistd.h>
 #include <string>
@@ -11,15 +12,15 @@
 #include <cerrno>
 
 // 每个子进程独立持有自己的退出标志
-// sig_atomic_t 保证信号处理函数对它的写入是原子的，不会产生 data race
+// std::atomic<bool> 保证信号处理函数和多线程下的可见性
 // 不用 inline 是因为每个子模块各自编译成独立进程，不存在多定义问题
-static volatile sig_atomic_t g_keep_running = 1;
+static std::atomic<bool> g_keep_running{true};
 
 // 统一的信号处理注册函数，每个子进程的 main() 调用一次即可
 // ModuleServer::runLoop() 检查 g_keep_running 来决定是否退出事件循环
 inline void setupModuleSignalHandlers() {
     struct sigaction sa{};
-    sa.sa_handler = [](int) { g_keep_running = 0; };
+    sa.sa_handler = [](int) { g_keep_running = false; };
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGINT,  &sa, nullptr);
@@ -29,7 +30,7 @@ inline void setupModuleSignalHandlers() {
 class ModuleServer {
 public:
     // 构造函数，初始化时传入路径和名字
-    ModuleServer(const std::string& path, const std::string& name) : m_path(path), m_name(name){}
+    ModuleServer(std::string path, std::string name) : m_path(std::move(path)), m_name(std::move(name)) {}
 
     // 析构函数； RAII 机制， 对象销毁时自动关闭fd, 绝不泄露
     virtual ~ModuleServer() {
@@ -52,8 +53,9 @@ public:
         sockaddr_un addr{};
         addr.sun_family = AF_UNIX;
         strncpy(addr.sun_path, m_path.c_str(), sizeof(addr.sun_path) - 1);
+        addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
         unlink(m_path.c_str()); // 确保路径不存在
-        if (bind(m_server_fd, (sockaddr*)&addr, sizeof(addr)) < 0) {
+        if (bind(m_server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
             perror("bind");
             close(m_server_fd);
             m_server_fd = -1;
@@ -141,7 +143,7 @@ private:
 
     void runLoop() {
         epoll_event events[10];
-        while (g_keep_running == 1) {
+        while (g_keep_running) {
             int nfds = epoll_wait(m_epoll_fd, events, 10, 1000);
             if (nfds < 0) {
                 if (errno == EINTR) {
@@ -171,6 +173,13 @@ private:
                         epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
                         continue;
                     }
+                    Car::msgHdrFromNetwork(req);
+                    if (!Car::isValidMsg(req)) {
+                        close(fd);
+                        epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+                        continue;
+                    }
+                    Car::msgValFromNetwork(req);
 
                     // 准备相应头的基本信息
                     resp.msg_type = Car::MsgType::RESPONSE;
@@ -181,6 +190,7 @@ private:
                     processCommand(req, resp);
 
                     // 发送响应
+                    Car::msgHdrToNetwork(resp);  Car::msgValToNetwork(resp);
                     if (!writeFull(fd, &resp, sizeof(resp))) {
                         close(fd);
                         epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, fd, nullptr);

@@ -1,5 +1,7 @@
 #pragma once
+#include <arpa/inet.h>
 #include <cstdint>
+#include <cstring>
 #include <string_view>
 
 // 用namespace隔离代码，避免命名冲突
@@ -15,6 +17,10 @@ constexpr const char* LOG_FILE_PATH = "./car_log.txt";
 constexpr const char* INI_FILE_PATH = "./car_info.ini";
 constexpr int MAX_FAULT_CODE = 10;
 constexpr int DEVICE_NAME_LEN = 32;
+constexpr size_t MSG_STR_SIZE = 64;
+constexpr size_t MSG_ARR_SIZE = 32;
+constexpr uint16_t CAR_MSG_MAGIC = 0xCA12;
+constexpr uint8_t  CAR_MSG_VERSION = 1;
 
 enum class ModuleID : uint8_t { DOOR = 1, STATUS, AIR, FAULT };
 enum class MsgType : uint8_t { CMD = 1, RESPONSE = 2 };
@@ -31,6 +37,9 @@ struct FaultState { uint8_t fault_count; uint16_t fault_codes[MAX_FAULT_CODE]; u
 
 // IPC消息结构体
 struct Msg {
+    uint16_t magic   = CAR_MSG_MAGIC;
+    uint8_t  version = CAR_MSG_VERSION;
+    uint8_t  reserved = 0;
     ModuleID mod_id;
     MsgType msg_type;
     CmdType cmd_type;
@@ -40,15 +49,19 @@ struct Msg {
         uint8_t u8;
         int32_t i32;
         float f32;
-        char str[64];
-        uint8_t arr_u8[32];
-        uint16_t arr_u16[32];
-        int32_t arr_i32[32];
+        char str[MSG_STR_SIZE];
+        uint8_t arr_u8[MSG_ARR_SIZE];
+        uint16_t arr_u16[MSG_ARR_SIZE];
+        int32_t arr_i32[MSG_ARR_SIZE];
     } value;
     int result; // 用于响应消息，表示操作结果
 };
 
 #pragma pack(pop) // 恢复默认内存对齐
+
+[[nodiscard]] constexpr bool isValidMsg(const Msg& msg) {
+    return msg.magic == CAR_MSG_MAGIC && msg.version == CAR_MSG_VERSION;
+}
 
 // 编译期安全检查：确保各状态结构体能装进 Msg.value union
 // 若未来给任意结构体加字段导致超出，编译器会直接报错，绝不会运行时踩内存
@@ -56,5 +69,44 @@ static_assert(sizeof(DoorState)   <= sizeof(Msg::value), "DoorState too large fo
 static_assert(sizeof(StatusState) <= sizeof(Msg::value), "StatusState too large for Msg union");
 static_assert(sizeof(AirState)    <= sizeof(Msg::value), "AirState too large for Msg union");
 static_assert(sizeof(FaultState)  <= sizeof(Msg::value), "FaultState too large for Msg union");
+
+// 网络字节序转换：Unix Domain Socket 本地通信无需转换（收发同机同字节序），
+// 但预留 hton/ntoh 接口，将来扩展 TCP 跨架构通信时只需解除注释即可工作。
+inline void msgHdrToNetwork(Msg& msg) {
+    msg.magic  = htons(msg.magic);
+    msg.result = htonl(msg.result);
+}
+inline void msgHdrFromNetwork(Msg& msg) {
+    msg.magic  = ntohs(msg.magic);
+    msg.result = ntohl(msg.result);
+}
+inline void msgValToNetwork(Msg& msg) {
+    switch (msg.val_type) {
+        case ValType::I32:     msg.value.i32 = htonl(msg.value.i32); break;
+        case ValType::F32: {   uint32_t t = 0; std::memcpy(&t, &msg.value.f32, 4); t = htonl(t); std::memcpy(&msg.value.f32, &t, 4); break; }
+        case ValType::STR_U16: for (auto& v : msg.value.arr_u16) v = htons(v); break;
+        case ValType::STR_I32: for (auto& v : msg.value.arr_i32) v = htonl(v); break;
+        default: break;
+    }
+}
+inline void msgValFromNetwork(Msg& msg) {
+    switch (msg.val_type) {
+        case ValType::I32:     msg.value.i32 = ntohl(msg.value.i32); break;
+        case ValType::F32: {   uint32_t t = 0; std::memcpy(&t, &msg.value.f32, 4); t = ntohl(t); std::memcpy(&msg.value.f32, &t, 4); break; }
+        case ValType::STR_U16: for (auto& v : msg.value.arr_u16) v = ntohs(v); break;
+        case ValType::STR_I32: for (auto& v : msg.value.arr_i32) v = ntohl(v); break;
+        default: break;
+    }
+}
+
+[[nodiscard]] constexpr const char* gearToText(uint8_t gear) {
+    switch (static_cast<Gear>(gear)) {
+        case Gear::P: return "P";
+        case Gear::R: return "R";
+        case Gear::N: return "N";
+        case Gear::D: return "D";
+        default: return "UNKNOWN";
+    }
+}
 
 } // namespace Car

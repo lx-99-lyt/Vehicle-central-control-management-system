@@ -29,7 +29,7 @@ void Logger::init(const std::string& path, LogLevel level) {
 }
 
 void Logger::rotateIfNeeded() {
-    constexpr uintmax_t MAX_SIZE = 1024 * 1024;
+    constexpr uintmax_t MAX_SIZE = 1024ULL * 1024;
     if (!m_file.is_open() || fs::file_size(m_path) < MAX_SIZE) {
         return;
     }

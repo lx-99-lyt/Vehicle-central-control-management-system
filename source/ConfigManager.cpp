@@ -44,16 +44,6 @@ uint8_t parseGear(const std::string& text) {
 
 } // namespace
 
-static const char* gearToText(uint8_t gear) {
-    switch (static_cast<Car::Gear>(gear)) {
-        case Car::Gear::P: return "P";
-        case Car::Gear::R: return "R";
-        case Car::Gear::N: return "N";
-        case Car::Gear::D: return "D";
-        default: return "UNKNOWN";
-    }
-}
-
 ConfigManager& ConfigManager::getInstance() {
     static ConfigManager instance;
     return instance;
@@ -104,7 +94,7 @@ bool ConfigManager::save() {
             << "oil_temp = " << m_data.status.oil_temp << "\n"
             << "fuel = " << m_data.status.fuel << "\n"
             << "battery_voltage = " << m_data.status.battery_voltage << "\n"
-            << "gear = " << gearToText(m_data.status.gear) << "\n"
+            << "gear = " << Car::gearToText(m_data.status.gear) << "\n"
             << "gear_code = " << static_cast<int>(m_data.status.gear) << "\n"
             << "hand_brake = " << static_cast<int>(m_data.status.hand_brake) << "\n\n";
 

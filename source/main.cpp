@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <atomic>
 #include <chrono>
 #include <thread>
 #include <csignal>
@@ -36,7 +37,7 @@ static bool recvAll(int fd, void* buf, size_t size) {
     return true;
 }
 
-volatile bool g_running = true;
+std::atomic<bool> g_running{true};
 constexpr float AUTO_LOCK_SPEED_KMH = 20.0f;
 
 bool sendRequest(const char* sock_path, Car::Msg& req, Car::Msg& resp);
@@ -97,11 +98,17 @@ bool sendRequest(const char* sock_path, Car::Msg& req, Car::Msg& resp) {
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+    addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
 
     bool ok = false;
-    if (connect(fd, (sockaddr*)&addr, sizeof(addr)) == 0) {
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+        Car::msgHdrToNetwork(req);  Car::msgValToNetwork(req);
         if (sendAll(fd, &req, sizeof(req)) && recvAll(fd, &resp, sizeof(resp))) {
-            ok = true;
+            Car::msgHdrFromNetwork(resp);
+            if (Car::isValidMsg(resp)) {
+                Car::msgValFromNetwork(resp);
+                ok = true;
+            }
         }
     }
 
@@ -117,6 +124,7 @@ void fetchStateFromModule(const char* sock_path, Car::ModuleID mod_id, T* state_
     cmd.cmd_type = Car::CmdType::GET_ALL;
     cmd.mod_id = mod_id;
 
+    static_assert(sizeof(T) <= sizeof(resp.value.arr_u8), "State type exceeds Msg union capacity");
     if (sendRequest(sock_path, cmd, resp) && resp.result == 0) {
         if (resp.val_type == Car::ValType::STR_U8) {
             std::memcpy(state_ptr, resp.value.arr_u8, sizeof(T));
@@ -145,7 +153,7 @@ void applyAutoLockRule() {
     req.value.u8 = 1;
 
     if (sendRequest(Car::SOCK_DOOR, req, resp) && resp.result == 0) {
-        LOG_INFO("Auto lock applied at speed %.1f km/h", status.speed);
+        LOG_INFO("Auto lock applied at speed %.1f km/h", static_cast<double>(status.speed));
     }
 }
 
@@ -283,6 +291,10 @@ int main()
         std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 休息 100 毫秒，避免占用过多 CPU
     }
 
+    // 退出前最后一次落盘。
+    // 注意：此时各子模块可能已收到 SIGTERM 并关闭 socket，
+    // fetchStateFromModule 会静默失败，落盘数据为上轮保存的旧值（最多 10 秒延迟）。
+    // 车载场景下这是可接受的——下次启动时 restoreStateToModules 会恢复最近一次成功写入的状态。
     syncAndSaveConfig();
     LOG_INFO("Central controller shut down safely.");
     return 0;
