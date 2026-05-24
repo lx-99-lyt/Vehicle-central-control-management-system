@@ -2,6 +2,7 @@
 #include <arpa/inet.h>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <string_view>
 
 // 用namespace隔离代码，避免命名冲突
@@ -69,6 +70,58 @@ static_assert(sizeof(DoorState)   <= sizeof(Msg::value), "DoorState too large fo
 static_assert(sizeof(StatusState) <= sizeof(Msg::value), "StatusState too large for Msg union");
 static_assert(sizeof(AirState)    <= sizeof(Msg::value), "AirState too large for Msg union");
 static_assert(sizeof(FaultState)  <= sizeof(Msg::value), "FaultState too large for Msg union");
+
+// ─────────────────────────────────────────────
+//  统一字段元数据表 —— 全系统唯一字段定义来源
+//  car_ctl / car_ai / 各子模块都引用此表，新增字段只需改这一处
+// ─────────────────────────────────────────────
+struct FieldMeta {
+    const char* module;
+    const char* field;
+    const char* sock_path;
+    uint8_t     item_id;
+    ValType     val_type;
+    ModuleID    mod_id;
+    bool        ai_accessible;  // AI 是否可控制此字段
+};
+
+inline constexpr FieldMeta FIELD_TABLE[] = {
+    // fields: module, field, sock_path, item_id, val_type, mod_id, ai_accessible
+    // -- door --
+    {"door", "front_left",   SOCK_DOOR,   1, ValType::U8,  ModuleID::DOOR,   true},
+    {"door", "front_right",  SOCK_DOOR,   2, ValType::U8,  ModuleID::DOOR,   true},
+    {"door", "back_left",    SOCK_DOOR,   3, ValType::U8,  ModuleID::DOOR,   true},
+    {"door", "back_right",   SOCK_DOOR,   4, ValType::U8,  ModuleID::DOOR,   true},
+    {"door", "trunk",        SOCK_DOOR,   5, ValType::U8,  ModuleID::DOOR,   true},
+    {"door", "lock_status",  SOCK_DOOR,   6, ValType::U8,  ModuleID::DOOR,   true},
+    // -- status --
+    {"status", "speed",           SOCK_STATUS, 1, ValType::F32, ModuleID::STATUS, false},
+    {"status", "rpm",             SOCK_STATUS, 2, ValType::I32, ModuleID::STATUS, false},
+    {"status", "water_temp",      SOCK_STATUS, 3, ValType::F32, ModuleID::STATUS, false},
+    {"status", "oil_temp",        SOCK_STATUS, 4, ValType::F32, ModuleID::STATUS, false},
+    {"status", "fuel",            SOCK_STATUS, 5, ValType::F32, ModuleID::STATUS, false},
+    {"status", "battery_voltage", SOCK_STATUS, 6, ValType::F32, ModuleID::STATUS, false},
+    {"status", "gear",            SOCK_STATUS, 7, ValType::U8,  ModuleID::STATUS, false},
+    {"status", "hand_brake",      SOCK_STATUS, 8, ValType::U8,  ModuleID::STATUS, true},
+    // -- air --
+    {"air", "ac_switch",    SOCK_AIR, 1, ValType::U8,  ModuleID::AIR, true},
+    {"air", "fan_speed",    SOCK_AIR, 2, ValType::U8,  ModuleID::AIR, true},
+    {"air", "temp_set",     SOCK_AIR, 3, ValType::I32, ModuleID::AIR, true},
+    {"air", "inner_cycle",  SOCK_AIR, 4, ValType::U8,  ModuleID::AIR, true},
+    // -- fault --
+    {"fault", "fault_count", SOCK_FAULT, 1, ValType::U8,      ModuleID::FAULT, false},
+    {"fault", "fault_codes", SOCK_FAULT, 2, ValType::STR_U16, ModuleID::FAULT, false},
+    {"fault", "wring_light", SOCK_FAULT, 3, ValType::U8,      ModuleID::FAULT, false},
+};
+
+// 按模块名 + 字段名查找元数据，未找到返回 nullptr
+inline const FieldMeta* findField(const std::string& module, const std::string& field) {
+    for (const auto& m : FIELD_TABLE) {
+        if (m.module == module && m.field == field)
+            return &m;
+    }
+    return nullptr;
+}
 
 // 网络字节序转换：Unix Domain Socket 本地通信无需转换（收发同机同字节序），
 // 但预留 hton/ntoh 接口，将来扩展 TCP 跨架构通信时只需解除注释即可工作。

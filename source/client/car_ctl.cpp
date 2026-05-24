@@ -171,13 +171,13 @@ int main(int argc, char const *argv[])
     std::string modStr = argv[1];
     std::string action = argv[2];
 
-    // 1、模块路由表
-    std::unordered_map<std::string, std::pair<Car::ModuleID, std::string>> routes = {
-        {"door", {Car::ModuleID::DOOR, Car::SOCK_DOOR}},
-        {"status", {Car::ModuleID::STATUS, Car::SOCK_STATUS}},
-        {"air", {Car::ModuleID::AIR, Car::SOCK_AIR}},
-        {"fault", {Car::ModuleID::FAULT, Car::SOCK_FAULT}}
-    };
+    // 模块路由：从共享字段表中提取模块级别的路由信息
+    std::unordered_map<std::string, std::pair<Car::ModuleID, std::string>> routes;
+    for (const auto& m : Car::FIELD_TABLE) {
+        if (routes.find(m.module) == routes.end()) {
+            routes[m.module] = {m.mod_id, m.sock_path};
+        }
+    }
     
     if (routes.find(modStr) == routes.end()) {
         std::cerr << " 错误：未知模块 '" << modStr << " ' 不存在！\n";
@@ -188,40 +188,6 @@ int main(int argc, char const *argv[])
     Car::Msg req{}, resp{};
     req.msg_type = Car::MsgType::CMD;
     req.mod_id = modID;
-
-    // 字段字典 （映射 字段名 —> {ItemID, 数据类型}）
-    struct ItemMeta { uint8_t id; Car::ValType type; };
-    std::unordered_map<std::string, std::unordered_map<std::string, ItemMeta>> dict = {
-        {"door", {
-            {"front_left", {1, Car::ValType::U8}},
-            {"front_right", {2, Car::ValType::U8}},
-            {"back_left", {3, Car::ValType::U8}},
-            {"back_right", {4, Car::ValType::U8}},
-            {"trunk", {5, Car::ValType::U8}},
-            {"lock_status", {6, Car::ValType::U8}}
-        }},
-        {"status", {
-            {"speed", {1, Car::ValType::F32}},
-            {"rpm", {2, Car::ValType::I32}},
-            {"water_temp", {3, Car::ValType::F32}},
-            {"oil_temp", {4, Car::ValType::F32}},
-            {"fuel", {5, Car::ValType::F32}},
-            {"battery_voltage", {6, Car::ValType::F32}},
-            {"gear", {7, Car::ValType::U8}},
-            {"hand_brake", {8, Car::ValType::U8}}
-        }},
-        {"air", {
-            {"ac_switch", {1, Car::ValType::U8}},
-            {"fan_speed", {2, Car::ValType::U8}},
-            {"temp_set", {3, Car::ValType::I32}},
-            {"inner_cycle", {4, Car::ValType::U8}}
-        }},
-        {"fault", {
-            {"fault_count", {1, Car::ValType::U8}},
-            {"fault_codes", {2, Car::ValType::STR_U16}}, // 数组类型特殊处理
-            {"wring_light", {3, Car::ValType::U8}}
-        }}
-    };
 
     // 处理get_all命令
     if (action == "get_all") {
@@ -238,14 +204,14 @@ int main(int argc, char const *argv[])
             return 1;
         }
         std::string itemStr = argv[3];
-        if (dict[modStr].find(itemStr) == dict[modStr].end()) {
+        const Car::FieldMeta* meta = Car::findField(modStr, itemStr);
+        if (!meta) {
             std::cerr << " 错误：未知字段 '" << itemStr << "' 不存在！\n";
             return 1;
         }
-        auto [itemID, valType] = dict[modStr][itemStr];
         req.cmd_type = Car::CmdType::READ;
-        req.item_id = itemID;
-        req.val_type = valType;
+        req.item_id = meta->item_id;
+        req.val_type = meta->val_type;
 
         if (sendCmd(sockPath, req, resp) == 0) {
             if (resp.result != 0) {
@@ -303,15 +269,15 @@ int main(int argc, char const *argv[])
         std::string item = argv[3];
         std::string valStr = argv[4];
 
-        if (dict[modStr].find(item) == dict[modStr].end()) {
+        const Car::FieldMeta* meta = Car::findField(modStr, item);
+        if (!meta) {
             std::cerr << " 错误：未知字段 '" << item << "' 不存在！\n";
             return 1;
         }
 
-        ItemMeta meta = dict[modStr][item];
         req.cmd_type = Car::CmdType::WRITE;
-        req.item_id = meta.id;
-        req.val_type = meta.type;
+        req.item_id = meta->item_id;
+        req.val_type = meta->val_type;
 
         // 根据类型转换字符串
         try {
@@ -321,13 +287,13 @@ int main(int argc, char const *argv[])
                     return 1;
                 }
             }
-            else if (meta.type == Car::ValType::U8) {
+            else if (meta->val_type == Car::ValType::U8) {
                 req.value.u8 = static_cast<uint8_t>(std::stoi(valStr));
             }
-            else if (meta.type == Car::ValType::I32) {
+            else if (meta->val_type == Car::ValType::I32) {
                 req.value.i32 = std::stoi(valStr);
             }
-            else if (meta.type == Car::ValType::F32) {
+            else if (meta->val_type == Car::ValType::F32) {
                 req.value.f32 = std::stof(valStr);
             }
             else {

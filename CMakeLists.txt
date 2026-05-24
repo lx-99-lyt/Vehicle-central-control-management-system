@@ -70,31 +70,14 @@ add_executable(car_ctl
     source/client/car_ctl.cpp
 )
 
-# 当前仓库中可直接构建的服务端模块
-add_executable(Car_Air
-    source/server/CarModules.cpp
-)
-target_compile_definitions(Car_Air PRIVATE BUILD_Car_Air)
+# 服务端子模块（每个模块独立源文件，不再依赖编译宏区分）
+add_executable(Car_Air    source/server/modules/air.cpp)
+add_executable(Car_Door   source/server/modules/door.cpp)
+add_executable(Car_Status source/server/modules/status.cpp)
+add_executable(Car_Fault  source/server/modules/fault.cpp)
 
-add_executable(Car_Door
-    source/server/CarModules.cpp
-)
-target_compile_definitions(Car_Door PRIVATE BUILD_Car_Door)
-
-add_executable(Car_Status
-    source/server/CarModules.cpp
-)
-target_compile_definitions(Car_Status PRIVATE BUILD_Car_Status)
-
-add_executable(Car_Fault
-    source/server/CarModules.cpp
-)
-target_compile_definitions(Car_Fault PRIVATE BUILD_Car_Fault)
-
-# AI 大脑进程
-add_executable(car_ai
-    source/client/car_ai.cpp
-)
+# ========== libcurl ==========
+find_package(CURL QUIET)
 
 # ========== nlohmann/json ==========
 include(FetchContent)
@@ -104,7 +87,16 @@ FetchContent_Declare(
     GIT_TAG v3.11.3
 )
 FetchContent_MakeAvailable(json)
-target_link_libraries(car_ai PRIVATE nlohmann_json::nlohmann_json)
+
+# AI 大脑进程（依赖 libcurl）
+if(CURL_FOUND)
+    add_executable(car_ai
+        source/client/car_ai.cpp
+    )
+    target_link_libraries(car_ai PRIVATE nlohmann_json::nlohmann_json CURL::libcurl)
+else()
+    message(WARNING "libcurl not found — car_ai will not be built. Install libcurl4-openssl-dev")
+endif()
 
 # ========== GoogleTest ==========
 FetchContent_Declare(

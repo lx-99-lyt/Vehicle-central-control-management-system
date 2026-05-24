@@ -26,10 +26,18 @@ TEST(IsValidMsg, BadVersion) {
     EXPECT_FALSE(Car::isValidMsg(msg));
 }
 
-TEST(MsgLayout, Sizes) {
-    // magic(2) + version(1) + reserved(1) + mod_id(1) + msg_type(1)
-    // + cmd_type(1) + item_id(1) + val_type(1) + value(64) + result(4)
-    EXPECT_EQ(sizeof(Car::Msg), 141);
+TEST(MsgLayout, ValueUnionSize) {
+    // value union 必须能容纳 MSG_STR_SIZE 字节的字符串
+    EXPECT_GE(sizeof(Car::Msg::value), Car::MSG_STR_SIZE);
+    // value union 大小由最大成员 arr_i32[MSG_ARR_SIZE] 决定
+    EXPECT_EQ(sizeof(Car::Msg::value), Car::MSG_ARR_SIZE * sizeof(int32_t));
+}
+
+TEST(MsgLayout, HeaderOffsets) {
+    // 验证 #pragma pack(1) 生效：头部字段间无填充
+    EXPECT_EQ(offsetof(Car::Msg, version),  sizeof(uint16_t));
+    EXPECT_EQ(offsetof(Car::Msg, value),    sizeof(uint16_t) + sizeof(uint8_t) * 7);
+    EXPECT_EQ(offsetof(Car::Msg, result),   sizeof(uint16_t) + sizeof(uint8_t) * 7 + sizeof(Car::Msg::value));
 }
 
 TEST(StateStructs, FitInMsgUnion) {

@@ -13,7 +13,6 @@
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <netdb.h>
 #include <unistd.h>
 #include <atomic>
 #include <chrono>
@@ -21,8 +20,6 @@
 #include <cstring>
 #include <iostream>
 #include <fstream>
-#include <poll.h>
-#include <sstream>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -218,55 +215,22 @@ static bool isSafeAction(const Action& act, float speed, std::string& reason) {
     return true;
 }
 
-// ─────────────────────────────────────────────
-//  字段路由表：module + field → sock_path / mod_id / item_id / val_type
-// ─────────────────────────────────────────────
-struct FieldMeta {
-    const char*    sock;
-    Car::ModuleID  mod;
-    uint8_t        item_id;
-    Car::ValType   val_type;
-};
-
-// 返回 nullptr 表示字段不存在
-static const FieldMeta* getFieldMeta(const std::string& module, const std::string& field) {
-    // 用静态数组存路由表，避免动态内存分配
-    struct Entry { const char* mod; const char* field; FieldMeta meta; };
-    static const Entry table[] = {
-        // door
-        {"door", "front_left",       {Car::SOCK_DOOR,   Car::ModuleID::DOOR,   1, Car::ValType::U8}},
-        {"door", "front_right",      {Car::SOCK_DOOR,   Car::ModuleID::DOOR,   2, Car::ValType::U8}},
-        {"door", "back_left",        {Car::SOCK_DOOR,   Car::ModuleID::DOOR,   3, Car::ValType::U8}},
-        {"door", "back_right",       {Car::SOCK_DOOR,   Car::ModuleID::DOOR,   4, Car::ValType::U8}},
-        {"door", "trunk",            {Car::SOCK_DOOR,   Car::ModuleID::DOOR,   5, Car::ValType::U8}},
-        {"door", "lock_status",      {Car::SOCK_DOOR,   Car::ModuleID::DOOR,   6, Car::ValType::U8}},
-        // status（AI 只允许操作手刹，档位已在安全检查里拦截）
-        {"status", "hand_brake",     {Car::SOCK_STATUS, Car::ModuleID::STATUS, 8, Car::ValType::U8}},
-        // air
-        {"air", "ac_switch",         {Car::SOCK_AIR,    Car::ModuleID::AIR,    1, Car::ValType::U8}},
-        {"air", "fan_speed",         {Car::SOCK_AIR,    Car::ModuleID::AIR,    2, Car::ValType::U8}},
-        {"air", "temp_set",          {Car::SOCK_AIR,    Car::ModuleID::AIR,    3, Car::ValType::I32}},
-        {"air", "inner_cycle",       {Car::SOCK_AIR,    Car::ModuleID::AIR,    4, Car::ValType::U8}},
-    };
-    for (const auto& e : table) {
-        if (e.mod == module && e.field == field)
-            return &e.meta;
-    }
-    return nullptr;
-}
-
 // 执行一条 action，向对应子模块发送 IPC 写入指令
 static bool executeAction(const Action& act) {
-    const FieldMeta* meta = getFieldMeta(act.module, act.field);
+    const Car::FieldMeta* meta = Car::findField(act.module, act.field);
     if (!meta) {
         std::cout << "  [跳过] 未知字段: " << act.module << "." << act.field << "\n";
+        return false;
+    }
+    if (!meta->ai_accessible) {
+        std::cout << "  [跳过] AI 无权操作: " << act.module << "." << act.field << "\n";
         return false;
     }
 
     Car::Msg req{}, resp{};
     req.msg_type = Car::MsgType::CMD;
     req.cmd_type = Car::CmdType::WRITE;
-    req.mod_id   = meta->mod;
+    req.mod_id   = meta->mod_id;
     req.item_id  = meta->item_id;
     req.val_type = meta->val_type;
 
@@ -277,16 +241,14 @@ static bool executeAction(const Action& act) {
         default: break;
     }
 
-    return ipcRequest(meta->sock, req, resp) && resp.result == 0;
+    return ipcRequest(meta->sock_path, req, resp) && resp.result == 0;
 }
 
 // ─────────────────────────────────────────────
-//  DeepSeek HTTP 客户端（纯 POSIX socket + TLS via openssl s_client 管道）
-//
-//  WSL 下直接用 POSIX socket 做 TLS 握手需要链接 OpenSSL，增加依赖。
-//  这里用更轻量的方案：把 HTTPS 请求委托给系统的 openssl s_client，
-//  通过 popen 管道发送请求拿到响应，零额外依赖。
+//  DeepSeek HTTP 客户端（libcurl）
 // ─────────────────────────────────────────────
+
+#include <curl/curl.h>
 
 // 多轮对话历史条目
 struct ChatMsg { std::string role; std::string content; };
@@ -315,7 +277,7 @@ static std::string buildRequestJson(const AiConfig& cfg,
     j["model"]  = cfg.model;
     j["stream"] = false;
 
-    j["messages"].push_back({{"role", "system"}, {"content", SYSTEM_PROMPT}});
+    j["messages"].push_back({{"role", "system"}, {"content": SYSTEM_PROMPT}});
     for (const auto& m : history)
         j["messages"].push_back({{"role", m.role}, {"content", m.content}});
     j["messages"].push_back({{"role", "user"}, {"content", user_input}});
@@ -323,98 +285,51 @@ static std::string buildRequestJson(const AiConfig& cfg,
     return j.dump();
 }
 
-// 校验 host 只含合法字符，防止命令注入
-static bool isValidHost(const std::string& host) {
-    if (host.empty() || host.size() > 253) return false;
-    for (char c : host) {
-        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '.' && c != '-' && c != ':')
-            return false;
-    }
-    return true;
+// libcurl 写回调：将响应数据追加到 string
+static size_t curlWriteCb(void* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* buf = static_cast<std::string*>(userdata);
+    const size_t total = size * nmemb;
+    buf->append(static_cast<const char*>(ptr), total);
+    return total;
 }
 
-// 通过 openssl s_client 发送 HTTPS 请求，返回响应 body
-// openssl s_client 在绝大多数 Linux / WSL 环境下默认已安装
+// 通过 libcurl 发送 HTTPS 请求，返回响应 body
 static std::string httpsPost(const AiConfig& cfg, const std::string& body) {
-    if (!isValidHost(cfg.api_host)) {
-        std::cerr << "[AI] 非法 API 主机名: " << cfg.api_host << "\n";
-        return "";
-    }
-    // 构造完整的 HTTP/1.1 请求报文
-    std::ostringstream req;
-    req << "POST " << cfg.api_path << " HTTP/1.1\r\n"
-        << "Host: " << cfg.api_host << "\r\n"
-        << "Authorization: Bearer " << cfg.api_key << "\r\n"
-        << "Content-Type: application/json\r\n"
-        << "Content-Length: " << body.size() << "\r\n"
-        << "Connection: close\r\n"
-        << "\r\n"
-        << body;
+    const std::string url = "https://" + cfg.api_host +
+                            (cfg.api_port != 443 ? ":" + std::to_string(cfg.api_port) : "") +
+                            cfg.api_path;
 
-    const std::string req_str = req.str();
-
-    char tmp_name[] = "/tmp/car_req_XXXXXX";
-    int fd = mkstemp(tmp_name);
-    if (fd < 0) return "";
-    [[maybe_unused]] ssize_t written = write(fd, req_str.data(), req_str.size());
-    if (static_cast<size_t>(written) != req_str.size()) {
-        close(fd);
-        unlink(tmp_name);
-        std::cerr << "[AI] 临时文件写入失败\n";
-        return "";
-    }
-    close(fd);
-
-    // 用 openssl s_client 建立 TLS 连接并收发数据
-    // -quiet 抑制握手调试输出，-connect 指定服务器
-    const std::string cmd = "openssl s_client -quiet -connect " +
-                            cfg.api_host + ":" + std::to_string(cfg.api_port) +
-                            " < " + tmp_name + " 2>/dev/null";
-
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) {
-        unlink(tmp_name);
-        std::cerr << "[AI] 无法启动 openssl s_client，请确认系统已安装 openssl\n";
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        std::cerr << "[AI] curl_easy_init 失败\n";
         return "";
     }
 
-    // 读取响应，30 秒超时，防止 API 卡死阻塞整个 AI 进程
-    int pipe_fd = fileno(pipe);
     std::string response;
-    char buf[4096];
-    constexpr int TIMEOUT_SEC = 30;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(TIMEOUT_SEC);
 
-    while (true) {
-        auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) {
-            std::cerr << "[AI] API 请求超时（" << TIMEOUT_SEC << "s）\n";
-            break;
-        }
-        int ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    const std::string auth = "Authorization: Bearer " + cfg.api_key;
+    headers = curl_slist_append(headers, auth.c_str());
 
-        pollfd pfd{pipe_fd, POLLIN, 0};
-        int ret = poll(&pfd, 1, ms);
-        if (ret < 0) break;
-        if (ret == 0) {
-            std::cerr << "[AI] API 请求超时（" << TIMEOUT_SEC << "s）\n";
-            break;
-        }
-        if (!(pfd.revents & POLLIN)) break;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "CarAI/1.0");
 
-        ssize_t n = read(pipe_fd, buf, sizeof(buf) - 1);
-        if (n <= 0) break;
-        buf[n] = '\0';
-        response += buf;
-    }
+    const CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK)
+        std::cerr << "[AI] curl 请求失败: " << curl_easy_strerror(res) << "\n";
 
-    pclose(pipe);
-    unlink(tmp_name);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
 
-    // 从 HTTP 响应里剥离 header，只保留 body
-    const auto header_end = response.find("\r\n\r\n");
-    if (header_end == std::string::npos) return response;
-    return response.substr(header_end + 4);
+    return (res == CURLE_OK) ? response : "";
 }
 
 // 从 API 返回的响应 JSON 里提取 message.content 字段
