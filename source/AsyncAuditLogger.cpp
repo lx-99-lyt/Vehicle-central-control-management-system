@@ -3,6 +3,7 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm>
+#include <vector>
 #include <mysql/mysql.h>
 
 AsyncAuditLogger& AsyncAuditLogger::getInstance() {
@@ -94,14 +95,21 @@ bool AsyncAuditLogger::insertLog(const AuditLogEntry& entry) {
         return false;
     }
 
+    // 使用 mysql_real_escape_string 防止 SQL 注入
+    auto esc = [conn](const std::string& s) {
+        std::vector<char> buf(s.size() * 2 + 1);
+        mysql_real_escape_string(conn, buf.data(), s.c_str(), s.size());
+        return std::string(buf.data());
+    };
+
     std::string sql = "INSERT INTO audit_logs (event_type, action, speed, reason) VALUES ('";
-    sql += entry.event_type;
+    sql += esc(entry.event_type);
     sql += "', '";
-    sql += entry.action;
+    sql += esc(entry.action);
     sql += "', ";
     sql += std::to_string(entry.speed);
     sql += ", '";
-    sql += entry.reason;
+    sql += esc(entry.reason);
     sql += "')";
 
     if (mysql_real_query(conn, sql.c_str(), sql.length()) != 0) {
