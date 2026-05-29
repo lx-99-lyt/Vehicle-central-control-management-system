@@ -1,0 +1,1 @@
+/usr/bin/riscv64-linux-gnu-g++ -static CMakeFiles/test_Logger.dir/tests/test_Logger.cpp.o CMakeFiles/test_Logger.dir/source/Car_Log.cpp.o -o bin/test_Logger  lib/libgtest.a lib/libgtest_main.a lib/libgtest.a  -latomic 

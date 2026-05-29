@@ -1,0 +1,1 @@
+/usr/bin/arm-linux-gnueabihf-g++ -static CMakeFiles/test_DoorModule.dir/tests/test_DoorModule.cpp.o -o bin/test_DoorModule  lib/libgtest.a lib/libgtest_main.a lib/libgtest.a 

@@ -1,0 +1,1 @@
+/usr/bin/riscv64-linux-gnu-g++ -static CMakeFiles/test_CarDataExtended.dir/tests/test_CarDataExtended.cpp.o -o bin/test_CarDataExtended  lib/libgtest.a lib/libgtest_main.a lib/libgtest.a  -latomic 

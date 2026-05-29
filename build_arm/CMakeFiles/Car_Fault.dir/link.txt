@@ -1,0 +1,1 @@
+/usr/bin/arm-linux-gnueabihf-g++ -static CMakeFiles/Car_Fault.dir/source/server/modules/fault.cpp.o -o bin/Car_Fault 

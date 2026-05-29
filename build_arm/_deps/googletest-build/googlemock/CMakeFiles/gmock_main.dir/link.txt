@@ -1,0 +1,2 @@
+/usr/bin/arm-linux-gnueabihf-ar qc ../../../lib/libgmock_main.a CMakeFiles/gmock_main.dir/src/gmock_main.cc.o
+/usr/bin/arm-linux-gnueabihf-ranlib ../../../lib/libgmock_main.a

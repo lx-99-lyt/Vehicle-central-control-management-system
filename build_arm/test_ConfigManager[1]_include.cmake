@@ -1,0 +1,5 @@
+if(EXISTS "/home/lx/VScode/GitHub/Vehicle-central-control-management-system/build_arm/test_ConfigManager[1]_tests.cmake")
+  include("/home/lx/VScode/GitHub/Vehicle-central-control-management-system/build_arm/test_ConfigManager[1]_tests.cmake")
+else()
+  add_test(test_ConfigManager_NOT_BUILT test_ConfigManager_NOT_BUILT)
+endif()

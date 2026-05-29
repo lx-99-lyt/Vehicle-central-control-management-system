@@ -1,3 +1,22 @@
 /.vscode
 /build
+/build_arm
+/build_riscv
+/.cache
 car_ai.conf
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiled files
+*.o
+*.so
+*.a
+*.exe
+*.out

@@ -15,8 +15,10 @@ add_compile_options(
     -O2
 )
 
+option(ENABLE_CLANG_TIDY "Enable clang-tidy static analysis (slow, CI only)" OFF)
+
 find_program(CLANG_TIDY_EXE clang-tidy)
-if(CLANG_TIDY_EXE)
+if(CLANG_TIDY_EXE AND ENABLE_CLANG_TIDY)
     set(CMAKE_CXX_CLANG_TIDY
         "${CLANG_TIDY_EXE}"
         "-checks=bugprone-*,performance-*,modernize-*,misc-*,\
@@ -41,7 +43,9 @@ if(CLANG_TIDY_EXE)
         "--warnings-as-errors=*"
         "-header-filter=${CMAKE_SOURCE_DIR}/include/.*|${CMAKE_SOURCE_DIR}/source/.*"
     )
-    message(STATUS "clang-tidy found: ${CLANG_TIDY_EXE}")
+    message(STATUS "clang-tidy enabled: ${CLANG_TIDY_EXE}")
+elseif(CLANG_TIDY_EXE)
+    message(STATUS "clang-tidy found but disabled (use -DENABLE_CLANG_TIDY=ON to enable)")
 else()
     message(WARNING "clang-tidy not installed. Run: sudo apt install clang-tidy")
 endif()
@@ -77,10 +81,10 @@ add_executable(Car_Status source/server/modules/status.cpp)
 add_executable(Car_Fault  source/server/modules/fault.cpp)
 
 # ========== libcurl ==========
-find_package(CURL QUIET)
 
 # ========== nlohmann/json ==========
 include(FetchContent)
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 FetchContent_Declare(
     json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
@@ -88,15 +92,16 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
-# AI 大脑进程（依赖 libcurl）
-if(CURL_FOUND)
-    add_executable(car_ai
-        source/client/car_ai.cpp
-    )
-    target_link_libraries(car_ai PRIVATE nlohmann_json::nlohmann_json CURL::libcurl)
-else()
-    message(WARNING "libcurl not found — car_ai will not be built. Install libcurl4-openssl-dev")
-endif()
+# AI 大脑进程
+# AI 大脑进程
+add_executable(car_ai source/client/car_ai.cpp)
+
+# 直接链接我们刚才编译的极简静态库，彻底告别依赖地狱
+target_link_libraries(car_ai PRIVATE 
+    nlohmann_json::nlohmann_json 
+    /home/lx/curl-8.7.1/lib/.libs/libcurl.a
+    dl pthread
+)
 
 # ========== GoogleTest ==========
 FetchContent_Declare(
@@ -112,10 +117,53 @@ set_target_properties(gtest gtest_main gmock gmock_main PROPERTIES CXX_CLANG_TID
 
 enable_testing()
 
-add_executable(car_tests
-    tests/test_CarData.cpp
+# ========== 测试目标 ==========
+
+# CarData 基础测试
+add_executable(test_CarData tests/test_CarData.cpp)
+target_link_libraries(test_CarData PRIVATE GTest::gtest GTest::gtest_main)
+
+# CarData 扩展测试（findField、网络字节序、枚举值等）
+add_executable(test_CarDataExtended tests/test_CarDataExtended.cpp)
+target_link_libraries(test_CarDataExtended PRIVATE GTest::gtest GTest::gtest_main)
+
+# ConfigManager 测试
+add_executable(test_ConfigManager
+    tests/test_ConfigManager.cpp
+    source/ConfigManager.cpp
+    source/Car_Log.cpp
 )
-target_link_libraries(car_tests PRIVATE GTest::gtest GTest::gtest_main)
+target_link_libraries(test_ConfigManager PRIVATE GTest::gtest GTest::gtest_main)
+
+# Logger 测试
+add_executable(test_Logger
+    tests/test_Logger.cpp
+    source/Car_Log.cpp
+)
+target_link_libraries(test_Logger PRIVATE GTest::gtest GTest::gtest_main)
+
+# Door 模块测试
+add_executable(test_DoorModule tests/test_DoorModule.cpp)
+target_link_libraries(test_DoorModule PRIVATE GTest::gtest GTest::gtest_main)
+
+# Air 模块测试
+add_executable(test_AirModule tests/test_AirModule.cpp)
+target_link_libraries(test_AirModule PRIVATE GTest::gtest GTest::gtest_main)
+
+# Status 模块测试
+add_executable(test_StatusModule tests/test_StatusModule.cpp)
+target_link_libraries(test_StatusModule PRIVATE GTest::gtest GTest::gtest_main)
+
+# Fault 模块测试
+add_executable(test_FaultModule tests/test_FaultModule.cpp)
+target_link_libraries(test_FaultModule PRIVATE GTest::gtest GTest::gtest_main)
 
 include(GoogleTest)
-gtest_discover_tests(car_tests)
+gtest_discover_tests(test_CarData)
+gtest_discover_tests(test_CarDataExtended)
+gtest_discover_tests(test_ConfigManager)
+gtest_discover_tests(test_Logger)
+gtest_discover_tests(test_DoorModule)
+gtest_discover_tests(test_AirModule)
+gtest_discover_tests(test_StatusModule)
+gtest_discover_tests(test_FaultModule)

@@ -1,0 +1,1 @@
+/usr/bin/arm-linux-gnueabihf-g++ -static CMakeFiles/test_ConfigManager.dir/tests/test_ConfigManager.cpp.o CMakeFiles/test_ConfigManager.dir/source/ConfigManager.cpp.o CMakeFiles/test_ConfigManager.dir/source/Car_Log.cpp.o -o bin/test_ConfigManager  lib/libgtest.a lib/libgtest_main.a lib/libgtest.a 

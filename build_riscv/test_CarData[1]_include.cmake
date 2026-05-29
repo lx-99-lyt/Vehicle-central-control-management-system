@@ -1,0 +1,5 @@
+if(EXISTS "/home/lx/VScode/GitHub/Vehicle-central-control-management-system/build_riscv/test_CarData[1]_tests.cmake")
+  include("/home/lx/VScode/GitHub/Vehicle-central-control-management-system/build_riscv/test_CarData[1]_tests.cmake")
+else()
+  add_test(test_CarData_NOT_BUILT test_CarData_NOT_BUILT)
+endif()

@@ -1,0 +1,1 @@
+/usr/bin/riscv64-linux-gnu-g++ -static CMakeFiles/test_StatusModule.dir/tests/test_StatusModule.cpp.o -o bin/test_StatusModule  lib/libgtest.a lib/libgtest_main.a lib/libgtest.a  -latomic 

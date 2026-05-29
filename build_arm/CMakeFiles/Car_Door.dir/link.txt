@@ -1,0 +1,1 @@
+/usr/bin/arm-linux-gnueabihf-g++ -static CMakeFiles/Car_Door.dir/source/server/modules/door.cpp.o -o bin/Car_Door 

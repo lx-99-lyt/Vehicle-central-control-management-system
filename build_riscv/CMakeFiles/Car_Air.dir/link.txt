@@ -1,0 +1,1 @@
+/usr/bin/riscv64-linux-gnu-g++ -static CMakeFiles/Car_Air.dir/source/server/modules/air.cpp.o -o bin/Car_Air   -latomic 

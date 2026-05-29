@@ -1,0 +1,1 @@
+/usr/bin/riscv64-linux-gnu-g++ -static CMakeFiles/test_AirModule.dir/tests/test_AirModule.cpp.o -o bin/test_AirModule  lib/libgtest.a lib/libgtest_main.a lib/libgtest.a  -latomic 

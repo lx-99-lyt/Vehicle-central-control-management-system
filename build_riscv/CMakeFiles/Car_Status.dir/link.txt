@@ -1,0 +1,1 @@
+/usr/bin/riscv64-linux-gnu-g++ -static CMakeFiles/Car_Status.dir/source/server/modules/status.cpp.o -o bin/Car_Status   -latomic 

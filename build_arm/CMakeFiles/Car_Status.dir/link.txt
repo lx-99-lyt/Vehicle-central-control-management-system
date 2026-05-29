@@ -1,0 +1,1 @@
+/usr/bin/arm-linux-gnueabihf-g++ -static CMakeFiles/Car_Status.dir/source/server/modules/status.cpp.o -o bin/Car_Status 

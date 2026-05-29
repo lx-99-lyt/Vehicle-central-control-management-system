@@ -40,6 +40,7 @@ struct AiConfig {
     std::string api_host = "api.deepseek.com";
     std::string api_path = "/chat/completions";
     int         api_port = 443;
+    bool        use_https = true;
 };
 
 // 解析 car_ai.conf，格式：key = value，# 开头为注释
@@ -67,17 +68,25 @@ static bool loadConfig(const std::string& path, AiConfig& cfg) {
         else if (key == "model")   cfg.model    = val;
         else if (key == "api_url") {
             // 从完整 URL 里拆出 host / path / port
-            // 支持格式：https://api.deepseek.com/chat/completions
             std::string url = val;
-            if (url.substr(0, 8) == "https://") url = url.substr(8);
-            else if (url.substr(0, 7) == "http://")  { url = url.substr(7); cfg.api_port = 80; }
+            if (url.substr(0, 8) == "https://") { url = url.substr(8); cfg.use_https = true; }
+            else if (url.substr(0, 7) == "http://") { url = url.substr(7); cfg.use_https = false; cfg.api_port = 80; }
             const auto slash = url.find('/');
+            std::string host_port;
             if (slash != std::string::npos) {
-                cfg.api_host = url.substr(0, slash);
+                host_port = url.substr(0, slash);
                 cfg.api_path = url.substr(slash);
             } else {
-                cfg.api_host = url;
+                host_port = url;
                 cfg.api_path = "/chat/completions";
+            }
+            // 提取 host:port
+            const auto colon = host_port.find(':');
+            if (colon != std::string::npos) {
+                cfg.api_host = host_port.substr(0, colon);
+                cfg.api_port = std::stoi(host_port.substr(colon + 1));
+            } else {
+                cfg.api_host = host_port;
             }
         }
     }
@@ -154,6 +163,32 @@ static float getCurrentSpeed() {
 // ─────────────────────────────────────────────
 //  JSON 工具（基于 nlohmann/json）
 // ─────────────────────────────────────────────
+
+// 清洗非法 UTF-8 字节，替换为 '?'
+static std::string sanitizeUtf8(const std::string& s) {
+    std::string result;
+    result.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) {
+        auto c = static_cast<unsigned char>(s[i]);
+        size_t len = 0;
+        if (c < 0x80)       len = 1;
+        else if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+        else { result += '?'; ++i; continue; }
+
+        if (i + len > s.size()) { result += '?'; break; }
+
+        bool valid = true;
+        for (size_t j = 1; j < len; ++j) {
+            if ((static_cast<unsigned char>(s[i + j]) & 0xC0) != 0x80) { valid = false; break; }
+        }
+        if (valid) { result.append(s, i, len); i += len; }
+        else { result += '?'; ++i; }
+    }
+    return result;
+}
 
 // 从原始响应里剥掉 ```json ... ``` 的 markdown 壳
 static std::string stripMarkdownFence(const std::string& s) {
@@ -257,30 +292,35 @@ struct ChatMsg { std::string role; std::string content; };
 static std::string buildRequestJson(const AiConfig& cfg,
                                     const std::vector<ChatMsg>& history,
                                     const std::string& user_input) {
-    // System prompt：约束模型只返回结构化 JSON，并告知安全规则
+    // System prompt：约束模型只返回结构化 JSON
     static const std::string SYSTEM_PROMPT =
-        "你是一个车载智能控制助手。用户用自然语言描述需求，你分析意图后，"
-        "严格按以下 JSON 格式返回，不要输出任何其他内容，不要加 markdown 代码块：\n"
-        "{\"reply\": \"对用户说的话\", \"actions\": [{\"module\": \"模块名\", "
-        "\"field\": \"字段名\", \"value\": 数值}, ...]}\n\n"
-        "支持的模块和字段：\n"
-        "- door: front_left, front_right, back_left, back_right, trunk, lock_status (0=关/解锁, 1=开/锁定)\n"
-        "- air: ac_switch(0/1), fan_speed(0-7), temp_set(整数°C), inner_cycle(0=外循环,1=内循环)\n"
-        "- status: hand_brake(0=放下,1=拉起)\n\n"
-        "安全规则：\n"
-        "1. 禁止操作 gear 字段，档位只能手动控制\n"
-        "2. 车速超过 5km/h 时，禁止开车门（lock_status 除外）\n"
-        "3. 如果用户的话不涉及任何车控操作，actions 返回空数组 []\n"
-        "4. value 必须是数字，不能是字符串";
+        "你是车载控制助手。必须且只能返回如下JSON，禁止返回任何其他文字：\n"
+        "{\"reply\": \"回复内容\", \"actions\": [{\"module\": \"模块\", \"field\": \"字段\", \"value\": 数值}]}\n\n"
+        "模块和字段：\n"
+        "- air: ac_switch(0/1), fan_speed(0-7), temp_set(整数°C), inner_cycle(0/1)\n"
+        "- door: front_left/front_right/back_left/back_right/trunk(0/1), lock_status(0/1)\n"
+        "- status: hand_brake(0/1)\n\n"
+        "严格规则：\n"
+        "1. 只要用户的话涉及车控意图（开/关/调/锁/热/冷等），actions必须包含对应指令，不能只在reply里说做了但actions为空\n"
+        "2. 只有用户只是闲聊（如\"今天天气怎么样\"）时，actions才返回空数组\n"
+        "3. value必须是数字\n\n"
+        "例子：\n"
+        "用户\"打开空调调到26度\"→ {\"reply\":\"已开启空调设置26°C\", \"actions\":[{\"module\":\"air\",\"field\":\"ac_switch\",\"value\":1},{\"module\":\"air\",\"field\":\"temp_set\",\"value\":26}]}\n"
+        "用户\"有点冷\"→ {\"reply\":\"已调高到24°C\", \"actions\":[{\"module\":\"air\",\"field\":\"temp_set\",\"value\":24}]}\n"
+        "用户\"有点热\"→ {\"reply\":\"已调低到22°C\", \"actions\":[{\"module\":\"air\",\"field\":\"temp_set\",\"value\":22}]}\n"
+        "用户\"还是热\"→ {\"reply\":\"已调低到20°C\", \"actions\":[{\"module\":\"air\",\"field\":\"temp_set\",\"value\":20}]}\n"
+        "用户\"锁车门\"→ {\"reply\":\"已锁门\", \"actions\":[{\"module\":\"door\",\"field\":\"lock_status\",\"value\":1}]}\n"
+        "用户\"空调调到33度\"→ {\"reply\":\"已设置33°C\", \"actions\":[{\"module\":\"air\",\"field\":\"temp_set\",\"value\":33}]}\n"
+        "用户\"关掉空调\"→ {\"reply\":\"已关闭空调\", \"actions\":[{\"module\":\"air\",\"field\":\"ac_switch\",\"value\":0}]}";
 
     json j;
     j["model"]  = cfg.model;
     j["stream"] = false;
 
-    j["messages"].push_back({{"role", "system"}, {"content": SYSTEM_PROMPT}});
+    j["messages"].push_back(json{{"role", "system"}, {"content", SYSTEM_PROMPT}});
     for (const auto& m : history)
-        j["messages"].push_back({{"role", m.role}, {"content", m.content}});
-    j["messages"].push_back({{"role", "user"}, {"content", user_input}});
+        j["messages"].push_back(json{{"role", m.role}, {"content", m.content}});
+    j["messages"].push_back(json{{"role", "user"}, {"content", user_input}});
 
     return j.dump();
 }
@@ -293,10 +333,12 @@ static size_t curlWriteCb(void* ptr, size_t size, size_t nmemb, void* userdata) 
     return total;
 }
 
-// 通过 libcurl 发送 HTTPS 请求，返回响应 body
+// 通过 libcurl 发送 HTTP/HTTPS 请求，返回响应 body
 static std::string httpsPost(const AiConfig& cfg, const std::string& body) {
-    const std::string url = "https://" + cfg.api_host +
-                            (cfg.api_port != 443 ? ":" + std::to_string(cfg.api_port) : "") +
+    const std::string scheme = cfg.use_https ? "https" : "http";
+    const bool show_port = cfg.use_https ? (cfg.api_port != 443) : (cfg.api_port != 80);
+    const std::string url = scheme + "://" + cfg.api_host +
+                            (show_port ? ":" + std::to_string(cfg.api_port) : "") +
                             cfg.api_path;
 
     CURL* curl = curl_easy_init();
@@ -381,10 +423,10 @@ static void runChatLoop(const AiConfig& cfg) {
             continue;
         }
 
-        // 4. 剥掉可能存在的 markdown 代码块壳
-        const std::string clean = stripMarkdownFence(content);
+        // 4. 清洗非法 UTF-8 + 剥掉 markdown 代码块壳
+        const std::string clean = stripMarkdownFence(sanitizeUtf8(content));
 
-        // 5. 解析 AI 返回的结构化 JSON（只 parse 一次，reply + actions 共享）
+        // 5. 解析 AI 返回的结构化 JSON
         json ai_json;
         try {
             ai_json = json::parse(clean);
@@ -393,7 +435,12 @@ static void runChatLoop(const AiConfig& cfg) {
             continue;
         }
 
-        const std::string reply = ai_json.value("reply", "");
+        std::string reply;
+        try {
+            reply = ai_json.value("reply", "");
+        } catch (...) {
+            reply = content;
+        }
         std::cout << "\nAI: " << (reply.empty() ? content : reply) << "\n";
 
         // 6. 解析 actions 数组

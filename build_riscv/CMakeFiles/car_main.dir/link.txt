@@ -1,0 +1,1 @@
+/usr/bin/riscv64-linux-gnu-g++ -static CMakeFiles/car_main.dir/source/main.cpp.o CMakeFiles/car_main.dir/source/Car_Log.cpp.o CMakeFiles/car_main.dir/source/ConfigManager.cpp.o -o bin/car_main   -latomic 

@@ -1,0 +1,3 @@
+/home/lx/VScode/GitHub/Vehicle-central-control-management-system/build_arm/_deps/json-subbuild/CMakeFiles/json-populate.dir
+/home/lx/VScode/GitHub/Vehicle-central-control-management-system/build_arm/_deps/json-subbuild/CMakeFiles/edit_cache.dir
+/home/lx/VScode/GitHub/Vehicle-central-control-management-system/build_arm/_deps/json-subbuild/CMakeFiles/rebuild_cache.dir
