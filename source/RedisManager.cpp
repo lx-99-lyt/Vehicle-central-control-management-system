@@ -1,7 +1,6 @@
 #include "RedisManager.hpp"
 #include <hiredis/hiredis.h>
 #include <fstream>
-#include <sstream>
 #include <iostream>
 #include <thread>
 
