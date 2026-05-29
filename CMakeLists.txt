@@ -58,12 +58,49 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
+# ========== MySQL ==========
+find_library(MYSQL_LIBRARY mysqlclient)
+if(MYSQL_LIBRARY)
+    message(STATUS "MySQL client found: ${MYSQL_LIBRARY}")
+else()
+    message(WARNING "libmysqlclient not found. Install: sudo apt install libmysqlclient-dev")
+endif()
+
+# ========== hiredis ==========
+include(FetchContent)
+FetchContent_Declare(
+    hiredis
+    GIT_REPOSITORY https://github.com/redis/hiredis.git
+    GIT_TAG v1.2.0
+)
+FetchContent_MakeAvailable(hiredis)
+
+# ========== libcurl ==========
+find_package(CURL QUIET)
+
+# ========== nlohmann/json ==========
+FetchContent_Declare(
+    json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(json)
+
 # 中控主程序
 add_executable(car_main
     source/main.cpp
     source/Car_Log.cpp
     source/ConfigManager.cpp
+    source/AsyncAuditLogger.cpp
+    source/RedisManager.cpp
 )
+
+target_link_libraries(car_main PRIVATE nlohmann_json::nlohmann_json)
+if(MYSQL_LIBRARY)
+    target_link_libraries(car_main PRIVATE ${MYSQL_LIBRARY})
+    target_compile_definitions(car_main PRIVATE HAS_MYSQL=1)
+endif()
+target_link_libraries(car_main PRIVATE hiredis)
 
 # 客户端工具
 add_executable(car_ctl
@@ -75,18 +112,6 @@ add_executable(Car_Air    source/server/modules/air.cpp)
 add_executable(Car_Door   source/server/modules/door.cpp)
 add_executable(Car_Status source/server/modules/status.cpp)
 add_executable(Car_Fault  source/server/modules/fault.cpp)
-
-# ========== libcurl ==========
-find_package(CURL QUIET)
-
-# ========== nlohmann/json ==========
-include(FetchContent)
-FetchContent_Declare(
-    json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
-)
-FetchContent_MakeAvailable(json)
 
 # AI 大脑进程（依赖 libcurl）
 if(CURL_FOUND)
@@ -119,3 +144,24 @@ target_link_libraries(car_tests PRIVATE GTest::gtest GTest::gtest_main)
 
 include(GoogleTest)
 gtest_discover_tests(car_tests)
+
+# ========== 新模块测试 ==========
+add_executable(test_async_audit_logger
+    tests/test_AsyncAuditLogger.cpp
+    source/AsyncAuditLogger.cpp
+)
+target_link_libraries(test_async_audit_logger PRIVATE GTest::gtest GTest::gtest_main)
+if(MYSQL_LIBRARY)
+    target_link_libraries(test_async_audit_logger PRIVATE ${MYSQL_LIBRARY})
+    target_compile_definitions(test_async_audit_logger PRIVATE HAS_MYSQL=1)
+endif()
+target_include_directories(test_async_audit_logger PRIVATE ${CMAKE_SOURCE_DIR}/include)
+gtest_discover_tests(test_async_audit_logger)
+
+add_executable(test_redis_manager
+    tests/test_RedisManager.cpp
+    source/RedisManager.cpp
+)
+target_link_libraries(test_redis_manager PRIVATE GTest::gtest GTest::gtest_main nlohmann_json::nlohmann_json hiredis)
+target_include_directories(test_redis_manager PRIVATE ${CMAKE_SOURCE_DIR}/include)
+gtest_discover_tests(test_redis_manager)
