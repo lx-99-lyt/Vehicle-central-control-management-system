@@ -88,7 +88,7 @@ bool AsyncAuditLogger::reconnect() {
 bool AsyncAuditLogger::insertLog(const AuditLogEntry& entry) {
     if (!m_connected || !m_mysql) return false;
 
-    MYSQL* conn = static_cast<MYSQL*>(m_mysql);
+    auto* conn = static_cast<MYSQL*>(m_mysql);
 
     if (mysql_ping(conn) != 0) {
         m_connected = false;

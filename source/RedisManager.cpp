@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <thread>
 
 RedisManager& RedisManager::getInstance() {
     static RedisManager instance;
@@ -56,9 +57,9 @@ bool RedisManager::connect() {
 
     struct timeval tv;
     tv.tv_sec = m_connect_timeout_ms / 1000;
-    tv.tv_usec = (m_connect_timeout_ms % 1000) * 1000;
+    tv.tv_usec = static_cast<long>(m_connect_timeout_ms % 1000) * 1000;
 
-    redisContext* ctx = redisConnectWithTimeout(m_host.c_str(), m_port, tv);
+    auto* ctx = redisConnectWithTimeout(m_host.c_str(), m_port, tv);
     if (!ctx || ctx->err) {
         if (ctx) {
             std::cerr << "[RedisManager] Connect failed: " << ctx->errstr << "\n";
@@ -69,7 +70,7 @@ bool RedisManager::connect() {
     }
 
     if (!m_password.empty()) {
-        redisReply* reply = static_cast<redisReply*>(redisCommand(ctx, "AUTH %s", m_password.c_str()));
+        auto* reply = static_cast<redisReply*>(redisCommand(ctx, "AUTH %s", m_password.c_str()));
         if (!reply || reply->type == REDIS_REPLY_ERROR) {
             std::cerr << "[RedisManager] AUTH failed\n";
             if (reply) freeReplyObject(reply);
@@ -81,7 +82,7 @@ bool RedisManager::connect() {
     }
 
     if (m_db != 0) {
-        redisReply* reply = static_cast<redisReply*>(redisCommand(ctx, "SELECT %d", m_db));
+        auto* reply = static_cast<redisReply*>(redisCommand(ctx, "SELECT %d", m_db));
         if (!reply || reply->type == REDIS_REPLY_ERROR) {
             std::cerr << "[RedisManager] SELECT db failed\n";
             if (reply) freeReplyObject(reply);
@@ -100,8 +101,8 @@ bool RedisManager::connect() {
 
 bool RedisManager::ensureConnected() {
     if (m_connected && m_context) {
-        redisContext* ctx = static_cast<redisContext*>(m_context);
-        redisReply* reply = static_cast<redisReply*>(redisCommand(ctx, "PING"));
+        auto* ctx = static_cast<redisContext*>(m_context);
+        auto* reply = static_cast<redisReply*>(redisCommand(ctx, "PING"));
         if (reply) {
             bool ok = (reply->type == REDIS_REPLY_STATUS &&
                        std::string(reply->str) == "PONG");
@@ -127,9 +128,9 @@ void RedisManager::update(const std::string& module, const std::string& field, c
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!ensureConnected()) return;
 
-    redisContext* ctx = static_cast<redisContext*>(m_context);
+    auto* ctx = static_cast<redisContext*>(m_context);
     std::string key = "car:" + module;
-    redisReply* reply = static_cast<redisReply*>(
+    auto* reply = static_cast<redisReply*>(
         redisCommand(ctx, "HSET %s %s %s", key.c_str(), field.c_str(), value.c_str()));
     if (reply) freeReplyObject(reply);
 }
@@ -139,11 +140,11 @@ void RedisManager::updateModule(const std::string& module,
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!ensureConnected()) return;
 
-    redisContext* ctx = static_cast<redisContext*>(m_context);
+    auto* ctx = static_cast<redisContext*>(m_context);
     std::string key = "car:" + module;
 
     for (const auto& [field, value] : fields) {
-        redisReply* reply = static_cast<redisReply*>(
+        auto* reply = static_cast<redisReply*>(
             redisCommand(ctx, "HSET %s %s %s", key.c_str(), field.c_str(), value.c_str()));
         if (reply) freeReplyObject(reply);
     }
@@ -154,10 +155,10 @@ RedisManager::GetModuleStatus(const std::string& module) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!ensureConnected()) return std::nullopt;
 
-    redisContext* ctx = static_cast<redisContext*>(m_context);
+    auto* ctx = static_cast<redisContext*>(m_context);
     std::string key = "car:" + module;
 
-    redisReply* reply = static_cast<redisReply*>(
+    auto* reply = static_cast<redisReply*>(
         redisCommand(ctx, "HGETALL %s", key.c_str()));
     if (!reply || reply->type == REDIS_REPLY_ERROR) {
         if (reply) freeReplyObject(reply);
@@ -177,10 +178,10 @@ RedisManager::GetField(const std::string& module, const std::string& field) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!ensureConnected()) return std::nullopt;
 
-    redisContext* ctx = static_cast<redisContext*>(m_context);
+    auto* ctx = static_cast<redisContext*>(m_context);
     std::string key = "car:" + module;
 
-    redisReply* reply = static_cast<redisReply*>(
+    auto* reply = static_cast<redisReply*>(
         redisCommand(ctx, "HGET %s %s", key.c_str(), field.c_str()));
     if (!reply || reply->type == REDIS_REPLY_ERROR || reply->type == REDIS_REPLY_NIL) {
         if (reply) freeReplyObject(reply);

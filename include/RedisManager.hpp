@@ -11,30 +11,19 @@ public:
     static RedisManager& getInstance();
 
     void init(const std::string& conf_path);
-
-    // 写操作 — 子模块更新本地状态后调用
     void update(const std::string& module, const std::string& field, const std::string& value);
-
-    // 批量写操作
     void updateModule(const std::string& module, const std::unordered_map<std::string, std::string>& fields);
-
-    // 读操作 — 非安全查询，返回所有模块状态的 JSON
     std::optional<nlohmann::json> GetAllStatus();
-
-    // 读操作 — 单个 Hash 全字段
     std::optional<std::unordered_map<std::string, std::string>> GetModuleStatus(const std::string& module);
-
-    // 读操作 — 单字段
     std::optional<std::string> GetField(const std::string& module, const std::string& field);
-
     void shutdown();
+
+    RedisManager(const RedisManager&) = delete;
+    RedisManager& operator=(const RedisManager&) = delete;
 
 private:
     RedisManager() = default;
     ~RedisManager();
-
-    RedisManager(const RedisManager&) = delete;
-    RedisManager& operator=(const RedisManager&) = delete;
 
     void parseConfig(const std::string& conf_path);
     bool connect();

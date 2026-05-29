@@ -74,6 +74,11 @@ FetchContent_Declare(
     GIT_TAG v1.2.0
 )
 FetchContent_MakeAvailable(hiredis)
+target_compile_options(hiredis PRIVATE -Wno-shadow)
+if(TARGET hiredis-test)
+    target_compile_options(hiredis-test PRIVATE -Wno-shadow -Wno-double-promotion)
+    set_target_properties(hiredis-test PROPERTIES C_CLANG_TIDY "")
+endif()
 
 # ========== libcurl ==========
 find_package(CURL QUIET)

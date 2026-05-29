@@ -18,27 +18,20 @@ class AsyncAuditLogger {
 public:
     static AsyncAuditLogger& getInstance();
 
-    // 初始化：读取配置文件，连接 MySQL，启动后台线程
     void init(const std::string& conf_path);
-
-    // 非阻塞投递日志条目
     void enqueue(const std::string& event_type,
                  const std::string& action,
                  float speed,
                  const std::string& reason);
-
-    // 优雅退出：等待队列消费完毕
     void shutdown();
-
-    // 测试用：获取当前队列大小
     size_t queueSize() const;
+
+    AsyncAuditLogger(const AsyncAuditLogger&) = delete;
+    AsyncAuditLogger& operator=(const AsyncAuditLogger&) = delete;
 
 private:
     AsyncAuditLogger() = default;
     ~AsyncAuditLogger();
-
-    AsyncAuditLogger(const AsyncAuditLogger&) = delete;
-    AsyncAuditLogger& operator=(const AsyncAuditLogger&) = delete;
 
     void parseConfig(const std::string& conf_path);
     void workerLoop();
