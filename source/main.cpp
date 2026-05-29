@@ -1,6 +1,8 @@
 #include "CarData.hpp"
 #include "Car_Log.hpp"
 #include "ConfigManager.hpp"
+#include "AsyncAuditLogger.hpp"
+#include "RedisManager.hpp"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -154,6 +156,7 @@ void applyAutoLockRule() {
 
     if (sendRequest(Car::SOCK_DOOR, req, resp) && resp.result == 0) {
         LOG_INFO("Auto lock applied at speed %.1f km/h", static_cast<double>(status.speed));
+        AUDIT_LOG("NORMAL_OP", "auto_lock", status.speed, "车速超阈值自动落锁");
     }
 }
 
@@ -256,6 +259,16 @@ int main()
 {
     Logger::getInstance().init("car_ctl.log", LogLevel::INFO);
 
+    // 初始化审计日志（MySQL 断连不阻塞主程序）
+#ifdef HAS_MYSQL
+    AsyncAuditLogger::getInstance().init("conf/db.conf");
+    LOG_INFO("AsyncAuditLogger initialized");
+#endif
+
+    // 初始化 Redis 状态管理器
+    RedisManager::getInstance().init("conf/redis.conf");
+    LOG_INFO("RedisManager initialized");
+
     signal(SIGINT, [](int){ g_running = false; });
     signal(SIGTERM, [](int){ g_running = false; });
 
@@ -290,6 +303,12 @@ int main()
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 休息 100 毫秒，避免占用过多 CPU
     }
+
+    // 优雅关闭审计日志（等待队列消费完毕）
+#ifdef HAS_MYSQL
+    AsyncAuditLogger::getInstance().shutdown();
+#endif
+    RedisManager::getInstance().shutdown();
 
     // 退出前最后一次落盘。
     // 注意：此时各子模块可能已收到 SIGTERM 并关闭 socket，
